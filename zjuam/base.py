@@ -13,6 +13,12 @@ class Zjuam(ABC):
         self.username = username
         self.password = password
         self.r = requests.Session()
+        # 使用与模拟脚本一致的 User-Agent
+        self.r.headers.update({
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+        })
+        # 存储用户信息
+        self.student_info = {}
 
     @abstractmethod
     def login(self) -> None:

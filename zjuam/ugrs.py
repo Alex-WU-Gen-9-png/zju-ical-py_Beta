@@ -58,6 +58,9 @@ class UgrsZjuam(Zjuam):
             })
             assert "用户名或密码错误" not in res.text, "用户名或密码错误，请确保用户名密码正确后再运行程序，否则有账号被锁定的风险"
             assert "账号被锁定" not in res.text, "输错密码次数太多，账号被锁定，请过段时间再使用"
+            
+            logger.info(f"登录请求结束，当前 URL: {res.url}")
+
         except Exception as e:
             logger.error(f"ZJUAM 登录失败: {e}")
             raise e
@@ -69,21 +72,59 @@ class UgrsZjuam(Zjuam):
         try:
             termQuery = ugrsClassTermToQueryString(term)
             assert termQuery, "学期参数错误"
+            
+            # 增加延时，避免请求过快导致 Session 异常或被封禁
+            time.sleep(1)
+            
             res = self.r.post(self.COURSE_URL, data={
                 "xnm": year,
                 "xqm": termQuery,
             })
-            content = res.json()
+            
+            # 检查是否返回了 HTML 错误页面
+            if res.text.strip().startswith("<!doctype html>") or "<title>错误提示</title>" in res.text:
+                 logger.warning("检测到 HTML 错误页面")
+                 logger.debug(f"Response URL: {res.url}")
+                 raise Exception("Session 可能已过期或未正确建立，服务器返回了 HTML 错误页面")
 
-            kblist = content["kbList"]
+            content = res.json()
+            
+            if isinstance(content, str):
+                if "captcha" in content or "验证码" in content:
+                    raise Exception(f"服务器返回验证码错误: {content}")
+                try:
+                    content = json.loads(content)
+                except Exception as e:
+                    logger.error(f"JSON 二次解析失败: {e}")
+                    raise Exception(f"服务器返回了无法解析的字符串: {content}")
+
+            if not isinstance(content, dict):
+                raise Exception(f"返回内容格式错误: 期望 dict, 实际 {type(content)}")
+
+            # 提取用户信息
+            if not self.student_info:
+                self.student_info = {
+                    "xm": content.get("xm", ""),
+                    "xh": content.get("xh", ""),
+                    "xy": content.get("xy", ""),
+                    "zy": content.get("zy", ""),
+                    "xzb": content.get("xzb", "")
+                }
+                logger.info(f"获取到用户信息: {self.student_info['xm']} ({self.student_info['xh']}) - {self.student_info['xy']}")
+
+            kblist = content.get("kbList")
+            if kblist is None:
+                logger.error("返回 JSON 中未找到 kbList 字段")
+                raise Exception("数据格式错误：缺少 kbList")
+
             ct = UGRSCourseTable()
             ct.fromRes(kblist)
             ct.merge()
             ct.communicate(exams)
         except json.JSONDecodeError as e:
-            logger.error(f"课程信息获取失败: {e}")
+            logger.error(f"课程信息获取失败 (JSON 解析错误): {e}")
             if res is not None:
-                logger.info(f"返回内容: {res.text}")
+                logger.debug(f"返回内容: {res.text[:500]}")
             raise e
         except Exception as e:
             logger.error(f"课程信息获取失败: {e}")
@@ -95,6 +136,9 @@ class UgrsZjuam(Zjuam):
         logger.info("开始获取考试信息")
         res = None
         try:
+            # 增加延时
+            time.sleep(1)
+            
             res = self.r.post(self.EXAM_URL % self.username, data={
                 "_search": "false",
                 "nd": str(int(time.time() * 1000)),

@@ -19,8 +19,17 @@ class UGRSCourse(Course):
         kcb = kcb.split("zwf")[0].split("<br>")
         self.name = kcb[0].replace("(", "（").replace(")", "）")
         self.timeString = kcb[1]
-        self.teacher = kcb[2]
-        self.location = None if kcb[3] == "" else kcb[3]
+        
+        # 兼容新的教师和地点格式
+        if len(kcb) > 2:
+            self.teacher = kcb[2]
+        else:
+            self.teacher = "未知教师"
+            
+        if len(kcb) > 3:
+            self.location = None if kcb[3] == "" else kcb[3]
+        else:
+            self.location = "未知地点"
 
         # 学期
         xxq: str = raw["xxq"]
@@ -33,6 +42,7 @@ class UGRSCourse(Course):
 
     def setWeekType(self, raw: str) -> None:
         # 单双周
+        # 0: 单周, 1: 双周, 2: 全周
         if raw == "0":
             self.weekType = WeekType.OddOnly
         elif raw == "1":
