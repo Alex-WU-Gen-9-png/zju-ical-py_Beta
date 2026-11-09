@@ -1,13 +1,15 @@
-# Undergraduate Students
+# Graduate Students
 import re
-from zjuam.base import Zjuam
+import time
+from urllib.parse import parse_qs, urlparse
+
+from loguru import logger
+
+from course.convert import grsClassTermToQueryString
 from course.grs_course import GRSCourseTable
 from exam.exam import ExamTable
 from utils.const import Term
-from loguru import logger
-from course.convert import grsGetYear, grsClassTermToQueryString
-from urllib.parse import urlparse, parse_qs
-import json
+from zjuam.base import Zjuam
 
 
 class GrsZjuam(Zjuam):
@@ -17,8 +19,8 @@ class GrsZjuam(Zjuam):
     YJSY_LOGIN_URL = "https://zjuam.zju.edu.cn/cas/login?service=https%3A%2F%2Fyjsy.zju.edu.cn%2F"
     YJSY_TOKEN_URL = "https://yjsy.zju.edu.cn/dataapi/sys/cas/client/validateLogin?service=https:%2F%2Fyjsy.zju.edu.cn%2F"
 
-    def __init__(self, username: str, password: str):
-        super().__init__(username, password)
+    def __init__(self, username: str, password: str, request_delay: float = 1.5):
+        super().__init__(username, password, request_delay)
 
     def login(self) -> None:
         logger.info("开始通过 ZJUAM 研究生途径登录")
@@ -28,7 +30,9 @@ class GrsZjuam(Zjuam):
             res = self.r.get(self.YJSY_LOGIN_URL)
             assert res.status_code == 200, "状态码错误"
             regex = r"\"execution\" value=\"(.*?)\" \/>"
-            csrf = re.search(regex, res.text).group(1)
+            match = re.search(regex, res.text)
+            assert match is not None, f"CSRF Key 正则匹配失败，返回内容: {res.text}"
+            csrf = match.group(1)
             assert csrf, "CSRF Key 为空"
         except Exception as e:
             logger.error(f"CSRF Key 获取失败: {e}")
@@ -51,17 +55,21 @@ class GrsZjuam(Zjuam):
 
         # stage 3: fire target
         try:
-            res = self.r.post(self.LOGIN_URL, data={
-                "username": self.username,
-                "password": cipher,
-                "authcode":  "",
-                "execution": csrf,
-                "_eventId":  "submit",
-            })
-            assert "用户名或密码错误" not in res.text, "用户名或密码错误，请确保用户名密码正确后再运行程序，否则有账号被锁定的风险"
+            res = self.r.post(
+                self.LOGIN_URL,
+                data={
+                    "username": self.username,
+                    "password": cipher,
+                    "authcode": "",
+                    "execution": csrf,
+                    "_eventId": "submit",
+                },
+            )
+            assert "用户名或密码错误" not in res.text, (
+                "用户名或密码错误，请确保用户名密码正确后再运行程序，否则有账号被锁定的风险"
+            )
             assert "账号被锁定" not in res.text, "输错密码次数太多，账号被锁定，请过段时间再使用"
-            self.sso_cookie = {
-                'iPlanetDirectoryPro': self.r.cookies['iPlanetDirectoryPro']}
+            self.sso_cookie = {"iPlanetDirectoryPro": self.r.cookies["iPlanetDirectoryPro"]}
         except Exception as e:
             logger.error(f"ZJUAM 登录失败: {e}")
             raise e
@@ -73,18 +81,18 @@ class GrsZjuam(Zjuam):
             response = self.r.get(
                 self.YJSY_LOGIN_URL,
                 cookies=self.sso_cookie,
-                allow_redirects=False  # 不自动跟随重定向
+                allow_redirects=False,  # 不自动跟随重定向
             )
 
             # 检查重定向位置
-            location_header = response.headers.get('location')
+            location_header = response.headers.get("location")
             if not location_header:
                 raise Exception("Invalid location header")
 
             # 从重定向URL中提取ticket参数
             parsed_url = urlparse(location_header)
             query_params = parse_qs(parsed_url.query)
-            ticket = query_params.get('ticket', [None])[0]
+            ticket = query_params.get("ticket", [None])[0]
             if not ticket:
                 raise Exception("Invalid location header - no ticket found")
 
@@ -110,25 +118,23 @@ class GrsZjuam(Zjuam):
     def getCourses(self, year: str, term: Term, exams: ExamTable) -> GRSCourseTable:
         logger.info(f"开始获取[{year}-{term.value}]课程信息")
         try:
-            year = grsGetYear(year, term)
-            termQuery = grsClassTermToQueryString(term)
-            assert year, "学年参数错误"
-            assert termQuery, "学期参数错误"
+            if "-" not in year:
+                raise ValueError(f"学年参数格式错误，应为'YYYY-YYYY'格式，实际为: {year}")
 
-            courseUrl = self.COURSE_URL + f"xn={year}&pkxq={termQuery}"
-            res = self.r.get(courseUrl, headers={
-                             "X-Access-Token": self._token}).json()
-            if not res.get("success"):
-                raise Exception("课程信息获取失败")
+            year_start = year.split("-")[0]
+            termQuery = grsClassTermToQueryString(term)
+            time.sleep(self.request_delay)
+
+            courseUrl = self.COURSE_URL + f"xn={year_start}&pkxq={termQuery}"
+            res = self.r.get(courseUrl, headers={"X-Access-Token": self._token}).json()
+            assert res.get("success"), "课程信息获取失败"
             res = res["result"]["kcbMap"]
             ct = GRSCourseTable()
             ct.fromRes(res)
             ct.deDup()
 
-            res = self.r.post(self.INFO_URL, headers={
-                              "X-Access-Token": self._token}).json()
-            if not res.get("success"):
-                raise Exception("课程附加信息获取失败")
+            res = self.r.post(self.INFO_URL, headers={"X-Access-Token": self._token}).json()
+            assert res.get("success"), "课程附加信息获取失败"
             res = res["result"]["xxjhnList"]
             ct.grsGetInfo(res)
 
@@ -140,5 +146,5 @@ class GrsZjuam(Zjuam):
 
     # TODO: implement exam fetching for graduate system
     def getExams(self, count: int = 5000) -> ExamTable:
-        logger.info("研究生系统暂未适配考试信息查询")
-        return None
+        logger.warning("研究生系统暂未适配考试信息查询")
+        return ExamTable()  # empty exam table

@@ -1,9 +1,11 @@
 from datetime import datetime
-from utils.const import ExamType
-from exam.convert import parseExamDateTime, DUMMY_DATE
-from ical.ical import Event
+
 from loguru import logger
+
 from course.course import Course, CourseTable
+from exam.convert import DUMMY_DATE, parseExamDateTime
+from ical.ical import Event
+from utils.const import ExamType
 
 
 class Exam:
@@ -47,7 +49,8 @@ class Exam:
 
         if self.start == self.end == DUMMY_DATE:
             logger.info(
-                f"{self.examType.value}: {self.name} {self.classId} (考试时间获取失败，可能是由于校历未发布无法计算时间，通常不影响当前学期日历，请参见 GitHub #3)")
+                f"{self.examType.value}: {self.name} {self.classId} (考试时间获取失败，可能是由于校历未发布无法计算时间，通常不影响当前学期日历，请参见 GitHub #3)"
+            )
         logger.info(f"{self.examType.value}: {self.name} {self.classId}")
 
     def __repr__(self) -> str:
@@ -77,13 +80,13 @@ class Exam:
 
     @property
     def description(self) -> str:
-        return "学分: %.1f" % self.credit
+        return f"学分: {self.credit:.1f}"
 
 
 class ExamTable:
     exams: list[Exam]
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.exams: list[Exam] = []
 
     def __repr__(self) -> str:
@@ -100,10 +103,12 @@ class ExamTable:
                 self.exams.append(Exam(item, ZDBK, ExamType.NoExam))
 
     def find(self, course: "Course") -> list[Exam]:
+        return self.findByClassId(course.classId)
+
+    def findByClassId(self, classId: str) -> list[Exam]:
         res = []
         for exam in self.exams:
-            if exam.classId == course.classId:
-                assert exam.name == course.name
+            if exam.classId == classId:
                 res.append(exam)
         return res
 
@@ -120,16 +125,21 @@ class ExamTable:
                     if exam.isEventGenerated:
                         continue
 
+                    if exam.start is None or exam.end is None:
+                        continue
+
                     desc_tail = f"\\n教师: {course.teacher}"
 
                     exam.isEventGenerated = True
-                    events.append(Event(
-                        summary=exam.summary,
-                        location=exam.locationString,
-                        description=exam.description + desc_tail,
-                        start=exam.start,
-                        end=exam.end
-                    ))
+                    events.append(
+                        Event(
+                            summary=exam.summary,
+                            location=exam.locationString,
+                            description=exam.description + desc_tail,
+                            start=exam.start,
+                            end=exam.end,
+                        )
+                    )
         except Exception as e:
             logger.error(f"考试日历事件生成失败: {e}")
             raise e

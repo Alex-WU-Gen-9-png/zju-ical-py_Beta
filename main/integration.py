@@ -1,28 +1,47 @@
-from ical.ical import Calender
 from loguru import logger
-from utils.config import config, ClassYearAndTerm, TermConfig
-from zjuam.ugrs import UgrsZjuam
+
+from exam.exam import ExamTable
+from ical.ical import Calender
+from utils.config import ClassYearAndTerm, TermConfig, config
 from zjuam.grs import GrsZjuam
+from zjuam.ugrs import UgrsZjuam
 
 
-def getCalender(username: str, password: str, skip_verification: bool, 
-                exams_only: bool = False, courses_only: bool = False) -> tuple[str, str]:
-    match username[0]:
-        case "3":
-            logger.info("检测到本科生学号，使用本科生途径登录")
-            zjuam = UgrsZjuam(username, password)
-        case "1" | "2":
-            logger.info("检测到研究生学号，使用研究生途径登录")
-            zjuam = GrsZjuam(username, password)
-        case _:
-            if skip_verification:
-                logger.warning("跳过学号验证")
-            else:
-                logger.error("学号不以 1/2/3 开头，不确保本项目能在除本科生/研究生之外的账号使用")
-                logger.info(
-                    "你可以通过 --skip-verification 参数跳过此检查，同时欢迎向作者反馈其他类型账号使用情况")
-                raise NotImplementedError("不支持的用户类型")
-        
+def getCalender(
+    username: str,
+    password: str,
+    skip_verification: bool = False,
+    exams_only: bool = False,
+    courses_only: bool = False,
+    *,
+    skip_verification_and_use: str | None = None,
+    request_delay: float = 1.5,
+    include_todos: bool = False,
+) -> tuple[str, str]:
+    # 保留原有位置参数和二元返回值；上游新增选项使用关键字参数。
+    if exams_only and courses_only:
+        raise ValueError("参数 --exams-only 和 --courses-only 不能同时使用")
+    if not username:
+        raise ValueError("用户名不能为空")
+    if skip_verification_and_use not in (None, "ugrs", "grs"):
+        raise ValueError("登录方式必须是 ugrs 或 grs")
+
+    login_method = skip_verification_and_use
+    if login_method is None:
+        if username.startswith("3"):
+            login_method = "ugrs"
+        elif username.startswith(("1", "2")):
+            login_method = "grs"
+        elif skip_verification:
+            logger.warning("跳过学号验证，默认使用本科生途径登录")
+            login_method = "ugrs"
+        else:
+            raise NotImplementedError(
+                "不支持的用户类型，请通过 --skip-verification-and-use ugrs/grs 指定登录方式"
+            )
+
+    client_type = UgrsZjuam if login_method == "ugrs" else GrsZjuam
+    zjuam = client_type(username, password, request_delay)
     zjuam.login()
 
     termConfigs = config.termConfigs
@@ -34,9 +53,9 @@ def getCalender(username: str, password: str, skip_verification: bool,
         return None
 
     cal = Calender()
-    
+
     # 根据参数决定是否获取考试信息
-    exams = None
+    exams = ExamTable()
     if not courses_only:
         exams = zjuam.getExams()
 
@@ -47,22 +66,26 @@ def getCalender(username: str, password: str, skip_verification: bool,
             exit(1)
 
         courses = zjuam.getCourses(item.Year, item.Term, exams)
-        
+
         # 根据参数决定是否添加课程事件
         if not exams_only:
             courseEvents = courses.toEvents(termConfig=tc)
             cal.addEvents(courseEvents)
-            
+
         # 根据参数决定是否添加考试事件
-        if not courses_only and exams is not None:
+        if not courses_only:
             examEvents = exams.toEvents(courses)
             cal.addEvents(examEvents)
+
+    if include_todos:
+        todos = zjuam.getTodos()
+        cal.addEvents(todos.toEvents(exams))
 
     # 动态生成日历名称和建议文件名
     # 优先使用提取到的用户信息
     info = zjuam.student_info
     base_name = config.toTermString()
-    
+
     # 目标格式: 学院_专业_行政班_姓名_学号_学期+后缀
     parts = []
     if info:
@@ -71,7 +94,7 @@ def getCalender(username: str, password: str, skip_verification: bool,
             val = info.get(key)
             if val:
                 parts.append(val)
-    
+
     suffix = ""
     if exams_only:
         suffix = "考试安排"
@@ -79,7 +102,7 @@ def getCalender(username: str, password: str, skip_verification: bool,
         suffix = "课程表"
     else:
         suffix = "课程与考试表"
-        
+
     if parts:
         # 使用下划线连接各部分
         prefix = "_".join(parts)
@@ -88,8 +111,18 @@ def getCalender(username: str, password: str, skip_verification: bool,
         cal_name = f"{base_name}{suffix}"
 
     # 移除文件名中可能不合法的字符
-    safe_cal_name = cal_name.replace("/", "_").replace("\\", "_").replace(":", "_").replace("*", "_").replace("?", "_").replace("\"", "_").replace("<", "_").replace(">", "_").replace("|", "_")
-    
+    safe_cal_name = (
+        cal_name.replace("/", "_")
+        .replace("\\", "_")
+        .replace(":", "_")
+        .replace("*", "_")
+        .replace("?", "_")
+        .replace('"', "_")
+        .replace("<", "_")
+        .replace(">", "_")
+        .replace("|", "_")
+    )
+
     suggested_filename = safe_cal_name + ".ics"
 
     return cal.getICS(icalName=cal_name), suggested_filename

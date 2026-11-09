@@ -2,7 +2,9 @@
 # Requires: pip install requests>=2.32.3
 # Env: export ZJU_USERNAME=... ZJU_PASSWORD=...
 
-import os, re, time
+import os
+import re
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -13,11 +15,13 @@ LOGIN_POST_URL = "https://zjuam.zju.edu.cn/cas/login"
 PUBKEY_URL = "https://zjuam.zju.edu.cn/cas/v2/getPubKey"
 EXAM_URL = "https://zdbk.zju.edu.cn/jwglxt/xskscx/kscx_cxXsgrksIndex.html?doType=query&gnmkdm=N509070&su=%s"
 
+
 def rsa_encrypt(password, modulus_hex, exponent_hex):
     n = int(modulus_hex, 16)
     e = int(exponent_hex, 16)
     m = int.from_bytes(password.encode(), "big")
     return f"{pow(m, e, n):0128x}"
+
 
 def parse_exam_time(raw):
     if not raw or "考试第" in raw:
@@ -26,6 +30,7 @@ def parse_exam_time(raw):
     start = datetime.strptime(date + raw[12:17], "%Y年%m月%d日%H:%M")
     end = datetime.strptime(date + raw[18:23], "%Y年%m月%d日%H:%M")
     return start, end
+
 
 def login(session, username, password):
     csrf_page = session.get(LOGIN_FORM_URL)
@@ -49,6 +54,7 @@ def login(session, username, password):
     if "账号被锁定" in res.text:
         raise ValueError("Account locked")
     return session
+
 
 def fetch_exams(session, username):
     payload = {
@@ -83,8 +89,18 @@ def fetch_exams(session, username):
                     }
                 )
         if "kssj" not in item and "qzkssj" not in item:
-            exams.append({**base, "type": "无考试", "start": None, "end": None, "location": None, "seat": None})
+            exams.append(
+                {
+                    **base,
+                    "type": "无考试",
+                    "start": None,
+                    "end": None,
+                    "location": None,
+                    "seat": None,
+                }
+            )
     return exams
+
 
 def to_ics(exams, calendar_name="ZJU Exams"):
     lines = [
@@ -116,6 +132,7 @@ def to_ics(exams, calendar_name="ZJU Exams"):
         )
     lines.append("END:VCALENDAR")
     return "\r\n".join(lines) + "\r\n"
+
 
 def main():
     username = os.environ["ZJU_USERNAME"]
